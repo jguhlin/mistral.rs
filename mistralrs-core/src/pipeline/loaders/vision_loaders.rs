@@ -145,7 +145,7 @@ pub trait VisionModelLoader: IsqModelLoader + Send + Sync + DeviceMappedModelLoa
 }
 
 #[cfg_attr(feature = "pyo3_macros", pyclass(eq, eq_int))]
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq)]
 /// The architecture to load the vision model as.
 pub enum VisionLoaderType {
     #[serde(rename = "phi3v")]
@@ -372,6 +372,12 @@ impl IsqModelLoader for AutoVisionLoader {
     fn immediate_isq_predicates(&self, config: &str) -> Result<Vec<Regex>> {
         Self::get_loader(config)?.immediate_isq_predicates(config)
     }
+    fn isq_layer_regexes_moqe(&self, config: &str) -> Result<Vec<Regex>> {
+        Self::get_loader(config)?.isq_layer_regexes_moqe(config)
+    }
+    fn immediate_isq_predicates_moqe(&self, config: &str) -> Result<Vec<Regex>> {
+        Self::get_loader(config)?.immediate_isq_predicates_moqe(config)
+    }
 }
 
 impl DeviceMappedModelLoader for AutoVisionLoader {
@@ -482,7 +488,7 @@ fn get_clip_vit_num_elems(cfg: &ClipConfig) -> usize {
 
 /// [`VisionLoader`] for a Phi 3 Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Phi3VLoader;
 
 pub struct Phi3VPrefixer;
@@ -749,6 +755,7 @@ impl DeviceMappedModelLoader for Phi3VLoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.head_dim(),
             v_head_dim: cfg.head_dim(),
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -763,7 +770,7 @@ impl DeviceMappedModelLoader for Phi3VLoader {
 
 /// [`VisionLoader`] for an Idefics 2 Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Idefics2Loader;
 
 pub struct Idefics2Prefixer;
@@ -1099,6 +1106,7 @@ impl DeviceMappedModelLoader for Idefics2Loader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -1113,7 +1121,7 @@ impl DeviceMappedModelLoader for Idefics2Loader {
 
 /// [`VisionLoader`] for an LLaVANext Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct LLaVANextLoader;
 
 pub struct LLaVANextPrefixer;
@@ -1368,6 +1376,7 @@ impl DeviceMappedModelLoader for LLaVANextLoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -1382,7 +1391,7 @@ impl DeviceMappedModelLoader for LLaVANextLoader {
 
 /// [`VisionLoader`] for an LLaVA Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct LLaVALoader;
 
 pub struct LLaVAPrefixer;
@@ -1629,6 +1638,7 @@ impl DeviceMappedModelLoader for LLaVALoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -1643,7 +1653,7 @@ impl DeviceMappedModelLoader for LLaVALoader {
 
 /// [`VisionLoader`] for an Llama Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct VLlamaLoader;
 
 pub struct VLlamaPrefixer;
@@ -2014,6 +2024,7 @@ impl DeviceMappedModelLoader for VLlamaLoader {
             sliding_window: None,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -2028,7 +2039,7 @@ impl DeviceMappedModelLoader for VLlamaLoader {
 
 /// [`VisionLoader`] for an Qwen2-VL model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Qwen2VLLoader;
 
 pub struct Qwen2VLPrefixer;
@@ -2314,6 +2325,7 @@ impl DeviceMappedModelLoader for Qwen2VLLoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -2328,7 +2340,7 @@ impl DeviceMappedModelLoader for Qwen2VLLoader {
 
 /// [`VisionLoader`] for an Idefics 3 Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Idefics3Loader;
 
 pub struct Idefics3Prefixer;
@@ -2631,6 +2643,7 @@ impl DeviceMappedModelLoader for Idefics3Loader {
             sliding_window: None,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -2645,7 +2658,7 @@ impl DeviceMappedModelLoader for Idefics3Loader {
 
 /// [`VisionLoader`] for an MiniCpm-O model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct MiniCpmOLoader;
 
 pub struct MiniCpmOPrefixer;
@@ -2913,6 +2926,7 @@ impl DeviceMappedModelLoader for MiniCpmOLoader {
             sliding_window: None,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -2923,7 +2937,7 @@ impl DeviceMappedModelLoader for MiniCpmOLoader {
 
 /// [`VisionLoader`] for a Phi 4MM Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Phi4MMLoader;
 
 pub struct Phi4MMPrefixer;
@@ -3254,6 +3268,7 @@ impl DeviceMappedModelLoader for Phi4MMLoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.head_dim(),
             v_head_dim: cfg.head_dim(),
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -3268,7 +3283,7 @@ impl DeviceMappedModelLoader for Phi4MMLoader {
 
 /// [`VisionLoader`] for an Qwen2_5VL model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Qwen2_5VLLoader;
 
 pub struct Qwen2_5VLPrefixer;
@@ -3549,6 +3564,7 @@ impl DeviceMappedModelLoader for Qwen2_5VLLoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -3563,7 +3579,7 @@ impl DeviceMappedModelLoader for Qwen2_5VLLoader {
 
 /// [`VisionLoader`] for an Gemma 3 model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Gemma3Loader;
 
 pub struct Gemma3Prefixer;
@@ -3887,6 +3903,7 @@ impl DeviceMappedModelLoader for Gemma3Loader {
             sliding_window: None, // None to be more forgiving, some do not
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -3901,7 +3918,7 @@ impl DeviceMappedModelLoader for Gemma3Loader {
 
 /// [`VisionLoader`] for an Mistral 3 model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Mistral3Loader;
 
 pub struct Mistral3Prefixer;
@@ -3920,7 +3937,8 @@ impl VisionModelLoader for Mistral3Loader {
         normal_loading_metadata: NormalLoadingMetadata,
         attention_mechanism: AttentionImplementation,
     ) -> Result<Box<dyn VisionModel + Send + Sync>> {
-        let cfg: crate::vision_models::mistral3::Mistral3Config = serde_json::from_str(config)?;
+        let mut cfg: crate::vision_models::mistral3::Mistral3Config = serde_json::from_str(config)?;
+        cfg.propagate_quantization_config();
         Ok(Box::new(Mistral3Model::new(
             &cfg,
             vb,
@@ -4210,6 +4228,7 @@ impl DeviceMappedModelLoader for Mistral3Loader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.head_dim(),
             v_head_dim: cfg.head_dim(),
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -4224,7 +4243,7 @@ impl DeviceMappedModelLoader for Mistral3Loader {
 
 /// [`VisionLoader`] for an Llama Vision model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct VLlama4Loader;
 
 pub struct VLlama4Prefixer;
@@ -4246,7 +4265,8 @@ impl VisionModelLoader for VLlama4Loader {
         normal_loading_metadata: NormalLoadingMetadata,
         attention_mechanism: AttentionImplementation,
     ) -> Result<Box<dyn VisionModel + Send + Sync>> {
-        let cfg: crate::vision_models::llama4::Llama4Config = serde_json::from_str(config)?;
+        let mut cfg: crate::vision_models::llama4::Llama4Config = serde_json::from_str(config)?;
+        cfg.propagate_quantization_config();
         Ok(Box::new(Llama4Model::new(
             &cfg,
             vb,
@@ -4259,7 +4279,8 @@ impl VisionModelLoader for VLlama4Loader {
         false
     }
     fn get_config_repr(&self, config: &str) -> Result<Box<dyn Debug>> {
-        let cfg: crate::vision_models::llama4::Llama4Config = serde_json::from_str(config)?;
+        let mut cfg: crate::vision_models::llama4::Llama4Config = serde_json::from_str(config)?;
+        cfg.propagate_quantization_config();
         Ok(Box::new(cfg))
     }
     fn get_processor(
@@ -4613,6 +4634,7 @@ impl DeviceMappedModelLoader for VLlama4Loader {
             sliding_window: None,
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -4627,7 +4649,7 @@ impl DeviceMappedModelLoader for VLlama4Loader {
 
 /// [`VisionLoader`] for an Gemma 3n model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Gemma3nLoader;
 
 #[allow(dead_code)]
@@ -5487,6 +5509,7 @@ impl DeviceMappedModelLoader for Gemma3nLoader {
             sliding_window: None, // None to be more forgiving, some do not
             k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
             v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -5501,24 +5524,14 @@ impl DeviceMappedModelLoader for Gemma3nLoader {
 
 /// [`VisionLoader`] for an Qwen3VL model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Qwen3VLLoader;
 
 pub struct Qwen3VLPrefixer;
 
 impl MultimodalPromptPrefixer for Qwen3VLPrefixer {
-    fn prefix_image(&self, image_indexes: Vec<usize>, prompt: &str) -> String {
-        format!(
-            "{}{prompt}",
-            format!(
-                "{}{}{}",
-                Qwen3VLProcessor::VISION_START,
-                Qwen3VLProcessor::IMAGE_PAD,
-                Qwen3VLProcessor::VISION_END
-            )
-            .repeat(image_indexes.len())
-        )
-    }
+    // No-op: With MessagesAction::Keep, the chat template handles image tokens
+    // when it sees {"type": "image"} entries in the content.
 }
 
 impl VisionModelLoader for Qwen3VLLoader {
@@ -5555,6 +5568,9 @@ impl VisionModelLoader for Qwen3VLLoader {
         Arc::new(Qwen3VLProcessor::new(max_edge))
     }
     fn supports_paged_attention(&self, _config: &str) -> bool {
+        true
+    }
+    fn supports_prefix_cacher(&self, _config: &str) -> bool {
         true
     }
     fn prefixer(&self, _config: &str) -> Arc<dyn MultimodalPromptPrefixer> {
@@ -5684,16 +5700,23 @@ impl DeviceMappedModelLoader for Qwen3VLLoader {
             embed_tokens + lm_head + norm
         };
 
-        let patch_merger = {
+        let (patch_merger, deepstack_mergers) = {
             let cfg = &cfg.vision_config;
             let hidden_size = cfg.hidden_size * cfg.spatial_merge_size.pow(2);
 
             let mlp0 = hidden_size * hidden_size + hidden_size;
-            let mlp2 = hidden_size * cfg.hidden_size + cfg.hidden_size;
+            let mlp2 = hidden_size * cfg.out_hidden_size + cfg.out_hidden_size;
 
+            // Main merger: norm uses cfg.hidden_size
             let ln_q = cfg.hidden_size + bias_if!(true, cfg.hidden_size);
+            let merger = mlp0 + mlp2 + ln_q;
 
-            mlp0 + mlp2 + ln_q
+            // Deepstack mergers: norm uses merged hidden_size
+            let ds_ln = hidden_size + bias_if!(true, hidden_size);
+            let ds_merger = mlp0 + mlp2 + ds_ln;
+            let deepstack = cfg.deepstack_visual_indexes.len() * ds_merger;
+
+            (merger, deepstack)
         };
 
         let patch_embed = {
@@ -5703,10 +5726,17 @@ impl DeviceMappedModelLoader for Qwen3VLLoader {
                 ..Default::default()
             };
             let kernel_sizes = [cfg.temporal_patch_size, cfg.patch_size, cfg.patch_size];
-            cfg.in_chans * cfg.hidden_size / conv_cfg.groups
+            let weight = cfg.in_chans * cfg.hidden_size / conv_cfg.groups
                 * kernel_sizes[0]
                 * kernel_sizes[1]
-                * kernel_sizes[2]
+                * kernel_sizes[2];
+            let bias = cfg.hidden_size;
+            weight + bias
+        };
+
+        let pos_embed = {
+            let cfg = &cfg.vision_config;
+            cfg.num_position_embeddings * cfg.hidden_size
         };
 
         let encoder_layer = {
@@ -5724,8 +5754,12 @@ impl DeviceMappedModelLoader for Qwen3VLLoader {
             norm1 + norm2 + fc1 + fc2 + qkv + out
         };
 
-        let elems =
-            text_elems + patch_merger + patch_embed + encoder_layer * cfg.vision_config.depth;
+        let elems = text_elems
+            + patch_merger
+            + deepstack_mergers
+            + patch_embed
+            + pos_embed
+            + encoder_layer * cfg.vision_config.depth;
 
         Ok(elems * dtype.size_in_bytes())
     }
@@ -5744,12 +5778,15 @@ impl DeviceMappedModelLoader for Qwen3VLLoader {
             let post_attention_layernorm = cfg.hidden_size;
 
             let size_in = cfg.hidden_size;
-            let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
-            let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
-            let q_proj = size_in * size_q / weight_pack_factor + size_q;
-            let k_proj = size_in * size_kv / weight_pack_factor + size_kv;
-            let v_proj = size_in * size_kv / weight_pack_factor + size_kv;
+            let size_q = cfg.head_dim * cfg.num_attention_heads;
+            let size_kv = cfg.head_dim * cfg.num_key_value_heads;
+            let q_proj = size_in * size_q / weight_pack_factor;
+            let k_proj = size_in * size_kv / weight_pack_factor;
+            let v_proj = size_in * size_kv / weight_pack_factor;
             let o_proj = size_q * size_in / weight_pack_factor;
+
+            let q_norm = cfg.head_dim;
+            let k_norm = cfg.head_dim;
 
             let h_size = cfg.hidden_size;
             let i_size = cfg.intermediate_size;
@@ -5763,6 +5800,8 @@ impl DeviceMappedModelLoader for Qwen3VLLoader {
                 + k_proj
                 + v_proj
                 + o_proj
+                + q_norm
+                + k_norm
                 + gate_proj
                 + up_proj
                 + down_proj
@@ -5792,6 +5831,7 @@ impl DeviceMappedModelLoader for Qwen3VLLoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.head_dim,
             v_head_dim: cfg.head_dim,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))
@@ -5806,24 +5846,14 @@ impl DeviceMappedModelLoader for Qwen3VLLoader {
 
 /// [`VisionLoader`] for a Qwen3VLMoE model.
 ///
-/// [`VisionLoader`]: https://ericlbuehler.github.io/mistral.rs/mistralrs/struct.VisionLoader.html
+/// [`VisionLoader`]: https://docs.rs/mistralrs/latest/mistralrs/struct.VisionLoader.html
 pub struct Qwen3VLMoELoader;
 
 pub struct Qwen3VLMoEPrefixer;
 
 impl MultimodalPromptPrefixer for Qwen3VLMoEPrefixer {
-    fn prefix_image(&self, image_indexes: Vec<usize>, prompt: &str) -> String {
-        format!(
-            "{}{prompt}",
-            format!(
-                "{}{}{}",
-                Qwen3VLMoEProcessor::VISION_START,
-                Qwen3VLMoEProcessor::IMAGE_PAD,
-                Qwen3VLMoEProcessor::VISION_END
-            )
-            .repeat(image_indexes.len())
-        )
-    }
+    // No-op: With MessagesAction::Keep, the chat template handles image tokens
+    // when it sees {"type": "image"} entries in the content.
 }
 
 impl VisionModelLoader for Qwen3VLMoELoader {
@@ -5860,6 +5890,9 @@ impl VisionModelLoader for Qwen3VLMoELoader {
         Arc::new(Qwen3VLMoEProcessor::new(max_edge))
     }
     fn supports_paged_attention(&self, _config: &str) -> bool {
+        true
+    }
+    fn supports_prefix_cacher(&self, _config: &str) -> bool {
         true
     }
     fn prefixer(&self, _config: &str) -> Arc<dyn MultimodalPromptPrefixer> {
@@ -5902,6 +5935,30 @@ impl IsqModelLoader for Qwen3VLMoELoader {
     }
     fn immediate_isq_predicates(&self, config: &str) -> Result<Vec<Regex>> {
         self.isq_layer_regexes(config)
+    }
+    fn isq_layer_regexes_moqe(&self, _config: &str) -> Result<Vec<Regex>> {
+        Ok(vec![
+            Regex::new(r"lm_head\.(weight|bias)$")?,
+            // MLP (dense layers)
+            Regex::new(r"model\.language_model\.layers\.(\d+)\.mlp\.gate_proj\.(weight|bias)$")?,
+            Regex::new(r"model\.language_model\.layers\.(\d+)\.mlp\.up_proj\.(weight|bias)$")?,
+            Regex::new(r"model\.language_model\.layers\.(\d+)\.mlp\.down_proj\.(weight|bias)$")?,
+            // MoE router
+            Regex::new(r"model\.language_model\.layers\.(\d+)\.mlp\.gate\.(weight|bias)$")?,
+            // MoE experts
+            Regex::new(
+                r"model\.language_model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.gate_proj\.(weight|bias)$",
+            )?,
+            Regex::new(
+                r"model\.language_model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.up_proj\.(weight|bias)$",
+            )?,
+            Regex::new(
+                r"model\.language_model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.down_proj\.(weight|bias)$",
+            )?,
+        ])
+    }
+    fn immediate_isq_predicates_moqe(&self, config: &str) -> Result<Vec<Regex>> {
+        self.isq_layer_regexes_moqe(config)
     }
 }
 
@@ -6001,16 +6058,23 @@ impl DeviceMappedModelLoader for Qwen3VLMoELoader {
             embed_tokens + lm_head + norm
         };
 
-        let patch_merger = {
+        let (patch_merger, deepstack_mergers) = {
             let cfg = &cfg.vision_config;
             let hidden_size = cfg.hidden_size * cfg.spatial_merge_size.pow(2);
 
             let mlp0 = hidden_size * hidden_size + hidden_size;
-            let mlp2 = hidden_size * cfg.hidden_size + cfg.hidden_size;
+            let mlp2 = hidden_size * cfg.out_hidden_size + cfg.out_hidden_size;
 
+            // Main merger: norm uses cfg.hidden_size
             let ln_q = cfg.hidden_size + bias_if!(true, cfg.hidden_size);
+            let merger = mlp0 + mlp2 + ln_q;
 
-            mlp0 + mlp2 + ln_q
+            // Deepstack mergers: norm uses merged hidden_size
+            let ds_ln = hidden_size + bias_if!(true, hidden_size);
+            let ds_merger = mlp0 + mlp2 + ds_ln;
+            let deepstack = cfg.deepstack_visual_indexes.len() * ds_merger;
+
+            (merger, deepstack)
         };
 
         let patch_embed = {
@@ -6020,10 +6084,17 @@ impl DeviceMappedModelLoader for Qwen3VLMoELoader {
                 ..Default::default()
             };
             let kernel_sizes = [cfg.temporal_patch_size, cfg.patch_size, cfg.patch_size];
-            cfg.in_chans * cfg.hidden_size / conv_cfg.groups
+            let weight = cfg.in_chans * cfg.hidden_size / conv_cfg.groups
                 * kernel_sizes[0]
                 * kernel_sizes[1]
-                * kernel_sizes[2]
+                * kernel_sizes[2];
+            let bias = cfg.hidden_size;
+            weight + bias
+        };
+
+        let pos_embed = {
+            let cfg = &cfg.vision_config;
+            cfg.num_position_embeddings * cfg.hidden_size
         };
 
         let encoder_layer = {
@@ -6041,8 +6112,12 @@ impl DeviceMappedModelLoader for Qwen3VLMoELoader {
             norm1 + norm2 + fc1 + fc2 + qkv + out
         };
 
-        let elems =
-            text_elems + patch_merger + patch_embed + encoder_layer * cfg.vision_config.depth;
+        let elems = text_elems
+            + patch_merger
+            + deepstack_mergers
+            + patch_embed
+            + pos_embed
+            + encoder_layer * cfg.vision_config.depth;
 
         Ok(elems * dtype.size_in_bytes())
     }
@@ -6064,14 +6139,15 @@ impl DeviceMappedModelLoader for Qwen3VLMoELoader {
             let post_attention_layernorm = text_cfg.hidden_size;
 
             let size_in = text_cfg.hidden_size;
-            let size_q = (text_cfg.hidden_size / text_cfg.num_attention_heads)
-                * text_cfg.num_attention_heads;
-            let size_kv = (text_cfg.hidden_size / text_cfg.num_attention_heads)
-                * text_cfg.num_key_value_heads;
-            let q_proj = size_in * size_q / weight_pack_factor + size_q;
-            let k_proj = size_in * size_kv / weight_pack_factor + size_kv;
-            let v_proj = size_in * size_kv / weight_pack_factor + size_kv;
+            let size_q = text_cfg.head_dim * text_cfg.num_attention_heads;
+            let size_kv = text_cfg.head_dim * text_cfg.num_key_value_heads;
+            let q_proj = size_in * size_q / weight_pack_factor;
+            let k_proj = size_in * size_kv / weight_pack_factor;
+            let v_proj = size_in * size_kv / weight_pack_factor;
             let o_proj = size_q * size_in / weight_pack_factor;
+
+            let q_norm = text_cfg.head_dim;
+            let k_norm = text_cfg.head_dim;
 
             // Check if this is a MoE layer
             let is_moe = !text_cfg.mlp_only_layers.contains(&layer_idx)
@@ -6106,6 +6182,8 @@ impl DeviceMappedModelLoader for Qwen3VLMoELoader {
                 + k_proj
                 + v_proj
                 + o_proj
+                + q_norm
+                + k_norm
                 + mlp_elems;
 
             layer_sizes.push(per_layer_elems * dtype.size_in_bytes());
@@ -6133,6 +6211,7 @@ impl DeviceMappedModelLoader for Qwen3VLMoELoader {
             sliding_window: cfg.sliding_window,
             k_head_dim: cfg.head_dim,
             v_head_dim: cfg.head_dim,
+            kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
         };
 
         Ok(Box::new(cfg))

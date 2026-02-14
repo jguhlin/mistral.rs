@@ -13,6 +13,7 @@ use candle_core::Shape;
 // ============================================================================
 
 #[cfg(feature = "cuda")]
+#[allow(clippy::cast_possible_truncation)]
 fn cuda_topk(input: &Tensor, k: usize) -> Result<TopKOutput> {
     use candle_core::backend::BackendStorage;
     use candle_core::cuda_backend::cudarc::driver::DevicePtr;
@@ -182,11 +183,18 @@ fn cuda_topk(input: &Tensor, k: usize) -> Result<TopKOutput> {
 /// Returns softmax weights (not raw logits) and indices in a single kernel call
 /// This eliminates intermediate tensor allocations and the separate softmax kernel
 #[cfg(feature = "cuda")]
+#[allow(clippy::cast_possible_truncation)]
 pub fn cuda_topk_softmax(input: &Tensor, k: usize) -> Result<TopKOutput> {
     use candle_core::backend::BackendStorage;
     use candle_core::cuda_backend::cudarc::driver::DevicePtr;
     use candle_core::cuda_backend::CudaStorageSlice;
     use std::ffi::c_void;
+
+    // Validate k to prevent shared memory issues in the CUDA kernel
+    const MAX_K: usize = 256;
+    if k == 0 || k > MAX_K {
+        candle_core::bail!("cuda_topk_softmax: k={} must be in range [1, {}]", k, MAX_K);
+    }
 
     let input = input.contiguous()?;
     let dims = input.dims();
@@ -735,7 +743,32 @@ pub fn apply_triangular(xs: &Tensor, diagonal: isize, upper: bool) -> Result<Ten
 ///
 /// This is equivalent to:
 /// `act(a) * b`
+///
+/// With supported dtypes (F16, BF16, F32) and activations (SiLU, GELU, ReLU),
+/// this uses a fused kernel for better performance by eliminating intermediate
+/// memory allocation. Optimized implementations are available for:
+/// - CUDA: Custom CUDA kernel with vec4 optimization
+/// - Metal: Native Metal kernel
+/// - CPU: Rayon-parallelized implementation
 pub fn mul_and_act(a: &Tensor, b: &Tensor, act: Activation) -> Result<Tensor> {
+    // Check if we can use the fused kernel (works on CUDA, Metal, and CPU)
+    if matches!(a.dtype(), DType::F16 | DType::BF16 | DType::F32) && a.dtype() == b.dtype() {
+        // Map Activation to GluActivationType
+        let glu_act = match act {
+            Activation::Silu | Activation::Swish => Some(mistralrs_quant::GluActivationType::Silu),
+            Activation::NewGelu | Activation::GeluPytorchTanh => {
+                Some(mistralrs_quant::GluActivationType::Gelu)
+            }
+            Activation::Gelu => Some(mistralrs_quant::GluActivationType::GeluErf),
+            Activation::Relu => Some(mistralrs_quant::GluActivationType::Relu),
+            _ => None,
+        };
+
+        if let Some(activation_type) = glu_act {
+            return mistralrs_quant::fused_glu(a, b, activation_type);
+        }
+    }
+
     a.apply(&act)? * b
 }
 

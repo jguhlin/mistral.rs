@@ -72,7 +72,7 @@ impl PagedAttentionScheduler {
     pub fn set_prefix_caching_enabled_sync(&mut self, enabled: bool) {
         self.prefix_caching_enabled = enabled;
         if enabled {
-            info!("PagedAttention prefix caching is enabled.");
+            info!("Prefix caching enabled (block-level, PagedAttention). Expect higher multi-turn throughput for both text and multimodal.");
         }
         // Update the block engine - we need to block on the async mutex
         // This is called once at startup, so blocking is acceptable
@@ -156,7 +156,7 @@ impl PagedAttentionScheduler {
         while !self.waiting.is_empty() {
             let seq = self.waiting.front().unwrap().clone();
 
-            if self.config.max_num_seqs == self.running.len() + 1 {
+            if self.running.len() >= self.config.max_num_seqs {
                 break;
             }
 

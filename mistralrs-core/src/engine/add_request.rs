@@ -167,14 +167,14 @@ impl Engine {
             RequestMessage::Chat {
                 messages,
                 enable_thinking,
-                reasoning_effort: _,
+                reasoning_effort,
             }
             | RequestMessage::VisionChat {
                 images: _,
                 audios: _,
                 messages,
                 enable_thinking,
-                reasoning_effort: _,
+                reasoning_effort,
             } => {
                 let pipeline = &*get_mut_arcmutex!(self.pipeline);
                 let tools = request.tools.unwrap_or_default();
@@ -184,6 +184,7 @@ impl Engine {
                     true,
                     true,
                     enable_thinking,
+                    reasoning_effort,
                     tools,
                 );
                 handle_seq_error!(template, request.response)
@@ -577,6 +578,9 @@ impl Engine {
                         if let Err(e) = seq.enable_harmony_mode() {
                             warn!("Failed to enable Harmony mode: {e}");
                         }
+                    } else if chat_template.uses_think_tags() {
+                        // Enable think tag mode if the chat template uses <think> tags
+                        seq.enable_think_tag_mode();
                     }
                 }
             }
@@ -633,20 +637,6 @@ impl Engine {
                     seq.keep_num_audios(audios_to_keep);
                     seq.prefill_v2_normal(normal, toks, offset)
                 }
-                Some(MatchingCache::Paged {
-                    logical_blocks,
-                    physical_blocks,
-                    images_to_keep,
-                    audios_to_keep,
-                    toks,
-                    offset,
-                }) => {
-                    self.logger.add_prefix_cache_hit();
-
-                    seq.keep_num_images(images_to_keep);
-                    seq.keep_num_audios(audios_to_keep);
-                    seq.prefill_v2_paged(logical_blocks, physical_blocks, toks, offset)
-                }
                 None => seq,
             };
 
@@ -670,6 +660,7 @@ impl Engine {
                     request.add_generation_prompt,
                     request.add_special_tokens,
                     request.enable_thinking,
+                    request.reasoning_effort,
                     tools,
                 );
                 let toks = match template {

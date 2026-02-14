@@ -1,10 +1,11 @@
 use crate::{
     get_mut_arcmutex, get_mut_group,
     harmony::HarmonyContext,
-    paged_attention::PhysicalTokenBlock,
+    paged_attention::BlockRef,
     pipeline::{text_models_inputs_processor::PagedAttentionMeta, LayerCaches},
     response::{ChatCompletionChunkResponse, Choice, ChunkChoice, Response, SYSTEM_FINGERPRINT},
     sampler::{Logprobs, Sampler},
+    think_tags::ThinkTagContext,
     AudioInput, ChatCompletionResponse, Usage,
 };
 use crate::{
@@ -20,7 +21,7 @@ use std::{
     fmt::Display,
     hash::{DefaultHasher, Hash, Hasher},
     sync::{Arc, RwLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{
     mpsc::{error::SendError, Sender},
@@ -79,7 +80,7 @@ pub enum SequenceRecognizer {
 enum SequenceCustomMetadata {
     PagedAttention {
         logical_token_blocks: Vec<LogicalTokenBlock>,
-        physical_blocks_prefill: Option<Vec<Arc<PhysicalTokenBlock>>>,
+        physical_blocks_prefill: Option<Vec<BlockRef>>,
         block_size: usize,
     },
     None,
@@ -88,11 +89,12 @@ enum SequenceCustomMetadata {
 macro_rules! blocks_to_add_new_tok {
     ($logical_token_blocks:expr) => {{
         let last = $logical_token_blocks.last();
-        if !last.is_some_and(|last| last.is_full() || last.is_empty()) {
-            // If we have space
-            0
-        } else {
-            1
+        match last {
+            // If the last block is not full (including the common "empty sentinel"
+            // case after an exact block-size prompt), we can reuse it.
+            Some(last) if !last.is_full() => 0,
+            // Otherwise we need to allocate a new physical block.
+            _ => 1,
         }
     }};
 }
@@ -273,6 +275,12 @@ pub struct MultimodalData {
     pub cached_pixel_values: Option<Tensor>,
     pub cached_img_thw: Option<Tensor>,
     pub cached_vid_thw: Option<Tensor>,
+    /// Complete image grid THW covering ALL images in the sequence (including prefix-cached ones).
+    /// Used by Qwen VL models for MRoPE position computation in `get_rope_index`.
+    /// Unlike `cached_img_thw`, this is never cleared by `keep_num_images`.
+    pub rope_img_grid_thw: Option<Tensor>,
+    /// Complete video grid THW covering ALL videos in the sequence (including prefix-cached ones).
+    pub rope_vid_grid_thw: Option<Tensor>,
     pub has_changed_prompt: bool,
     pub image_gen_response_format: Option<ImageGenerationResponseFormat>,
     pub diffusion_params: Option<DiffusionGenerationParams>,
@@ -291,6 +299,8 @@ impl MultimodalData {
             cached_pixel_values: None,
             cached_img_thw: None,
             cached_vid_thw: None,
+            rope_img_grid_thw: None,
+            rope_vid_grid_thw: None,
             has_changed_prompt: false,
             image_gen_response_format,
             diffusion_params,
@@ -369,8 +379,13 @@ impl MultimodalData {
 
     pub fn keep_num_images(&mut self, images_to_keep: usize) {
         if let Some(imgs) = self.input_images.as_mut() {
-            imgs.keep_num_images(images_to_keep)
+            imgs.keep_num_images(images_to_keep);
         }
+        // Invalidate preprocessed pixel value cache — the trimmed image set
+        // no longer matches the cached tensor dimensions (used by Qwen VL models).
+        self.cached_pixel_values = None;
+        self.cached_img_thw = None;
+        self.cached_vid_thw = None;
     }
 
     pub fn image_gen_response_format(&self) -> Option<ImageGenerationResponseFormat> {
@@ -447,6 +462,7 @@ pub struct Sequence {
     pub prompt_tok_per_sec: f32,
     pub prompt_timestamp: Option<u128>,
     pub total_prompt_time: Option<u128>,
+    pub step_start_instant: Option<Instant>,
     group: Arc<Mutex<SequenceGroup>>,
     state: RwLock<SequenceState>,
 
@@ -458,6 +474,9 @@ pub struct Sequence {
 
     // Harmony format parsing context (for GPT-OSS models)
     harmony_context: Option<HarmonyContext>,
+
+    // Think tag parsing context (for models using <think>...</think> tags)
+    think_tag_context: Option<ThinkTagContext>,
 }
 
 impl BlockEngineSequence for Sequence {
@@ -489,7 +508,7 @@ impl BlockEngineSequence for Sequence {
         }
     }
 
-    fn take_physical_blocks_prefill(&mut self) -> Option<Vec<Arc<PhysicalTokenBlock>>> {
+    fn take_physical_blocks_prefill(&mut self) -> Option<Vec<BlockRef>> {
         match &mut self.custom_metadata {
             SequenceCustomMetadata::PagedAttention {
                 logical_token_blocks: _,
@@ -624,8 +643,10 @@ impl Sequence {
             token_offset: 0,
             eos_tokens,
             total_prompt_time: None,
+            step_start_instant: None,
             waitlisted_count: 0,
             harmony_context: None,
+            think_tag_context: None,
         }
     }
 
@@ -663,7 +684,7 @@ impl Sequence {
     pub fn prefill_v2_paged(
         mut self,
         logical_blocks: Vec<LogicalTokenBlock>,
-        physical_blocks: Vec<Arc<PhysicalTokenBlock>>,
+        physical_blocks: Vec<BlockRef>,
         toks: Vec<u32>,
         offset: usize,
     ) -> Self {
@@ -906,6 +927,14 @@ impl Sequence {
             let _ = harmony_ctx.process_token(tok.token);
         }
 
+        // Process token through think tag parser if in think tag mode
+        if let Some(ref mut think_ctx) = self.think_tag_context {
+            if !stopped_by_token {
+                // Use process_bytes to handle incomplete UTF-8 sequences (e.g., emojis split across tokens)
+                think_ctx.process_bytes(&completion_bytes);
+            }
+        }
+
         self.cumulative_logprob += tok.logprob;
         self.tokens.push(tok.token);
         self.logprobs.push(tok);
@@ -1027,15 +1056,31 @@ impl Sequence {
         self.prompt_timestamp
     }
 
-    fn update_time_info(&self) {
+    /// Set the step start instant for accurate prompt timing measurement.
+    /// Call this right before step() is called.
+    pub fn set_step_start_instant(&mut self) {
+        self.step_start_instant = Some(Instant::now());
+    }
+
+    pub(crate) fn update_time_info(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time travel has occurred!")
             .as_millis();
 
+        // Prefer the recorded prompt time so it doesn't grow during decode steps.
+        // Fall back to the in-flight Instant timing only while the prompt step is running.
+        let prompt_time_ms = if let Some(pt) = self.total_prompt_time {
+            pt
+        } else if let Some(start) = self.step_start_instant {
+            start.elapsed().as_millis()
+        } else {
+            0
+        };
+
         if let Some(ts) = self.prompt_timestamp {
             get_mut_group!(self).total_completion_time = now - ts;
-            get_mut_group!(self).total_prompt_time = self.total_prompt_time.unwrap();
+            get_mut_group!(self).total_prompt_time = prompt_time_ms;
         }
 
         get_mut_group!(self).total_time = now - self.timestamp;
@@ -1243,6 +1288,77 @@ impl Sequence {
             .map(|ctx| ctx.finalize_tool_calls())
             .unwrap_or_default()
     }
+
+    // === Think Tag Format Support ===
+
+    /// Enable think tag parsing for this sequence.
+    /// Should be called when the model uses `<think>...</think>` tags.
+    ///
+    /// If the prompt ends with `<think>`, the context will start inside a think block
+    /// since the chat template hardcoded the opening tag.
+    pub fn enable_think_tag_mode(&mut self) {
+        if self.think_tag_context.is_none() {
+            // Check if the prompt ends with <think> (template hardcoded the opening tag)
+            let starts_in_think_block = self.prompt.trim_end().ends_with("<think>");
+            self.think_tag_context = Some(if starts_in_think_block {
+                ThinkTagContext::new_in_think_block()
+            } else {
+                ThinkTagContext::new()
+            });
+        }
+    }
+
+    /// Check if this sequence is in think tag mode
+    pub fn is_think_tag_mode(&self) -> bool {
+        self.think_tag_context.is_some()
+    }
+
+    /// Process text through the think tag parser (if enabled).
+    pub fn process_think_tag_text(&mut self, text: &str) {
+        if let Some(ref mut ctx) = self.think_tag_context {
+            ctx.process_text(text);
+        }
+    }
+
+    /// Get the latest think tag reasoning delta (for streaming).
+    /// Returns None if not in think tag mode or no new reasoning content.
+    pub fn get_think_tag_reasoning_delta(&mut self) -> Option<String> {
+        self.think_tag_context
+            .as_mut()
+            .and_then(|ctx| ctx.get_reasoning_delta())
+    }
+
+    /// Get the latest think tag content delta (for streaming).
+    /// Returns None if not in think tag mode or no new content.
+    pub fn get_think_tag_content_delta(&mut self) -> Option<String> {
+        self.think_tag_context
+            .as_mut()
+            .and_then(|ctx| ctx.get_content_delta())
+    }
+
+    /// Get accumulated think tag reasoning content (for non-streaming).
+    /// Returns None if not in think tag mode or no reasoning content.
+    pub fn get_think_tag_reasoning_content(&self) -> Option<String> {
+        self.think_tag_context
+            .as_ref()
+            .and_then(|ctx| ctx.reasoning_content())
+    }
+
+    /// Get accumulated think tag content (for non-streaming).
+    /// Returns None if not in think tag mode or no content.
+    pub fn get_think_tag_content(&self) -> Option<String> {
+        self.think_tag_context
+            .as_ref()
+            .and_then(|ctx| ctx.content())
+    }
+
+    /// Finalize think tag parsing at end of stream.
+    /// Handles unclosed `<think>` blocks.
+    pub fn think_tag_finalize(&mut self) {
+        if let Some(ref mut ctx) = self.think_tag_context {
+            ctx.finalize();
+        }
+    }
 }
 
 pub struct SequenceGroup {
@@ -1327,12 +1443,23 @@ impl SequenceGroup {
             completion_tokens: self.total_toks.saturating_sub(self.total_prompt_toks),
             prompt_tokens: self.total_prompt_toks,
             total_tokens: self.total_toks,
-            avg_tok_per_sec: (self.total_toks as f32 / self.total_time as f32) * 1000.,
-            avg_prompt_tok_per_sec: (self.total_prompt_toks as f32 / self.total_prompt_time as f32)
-                * 1000.,
-            avg_compl_tok_per_sec: (self.total_toks.saturating_sub(self.total_prompt_toks) as f32
-                / self.total_completion_time as f32)
-                * 1000.,
+            avg_tok_per_sec: if self.total_time > 0 {
+                (self.total_toks as f32 / self.total_time as f32) * 1000.
+            } else {
+                0.0
+            },
+            avg_prompt_tok_per_sec: if self.total_prompt_time > 0 {
+                (self.total_prompt_toks as f32 / self.total_prompt_time as f32) * 1000.
+            } else {
+                0.0
+            },
+            avg_compl_tok_per_sec: if self.total_completion_time > 0 {
+                (self.total_toks.saturating_sub(self.total_prompt_toks) as f32
+                    / self.total_completion_time as f32)
+                    * 1000.
+            } else {
+                0.0
+            },
             total_time_sec: self.total_time as f32 / 1000.,
             total_completion_time_sec: self.total_completion_time as f32 / 1000.,
             total_prompt_time_sec: self.total_prompt_time as f32 / 1000.,

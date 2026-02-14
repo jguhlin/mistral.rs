@@ -100,7 +100,7 @@ impl CausalSelfAttention {
             comm,
             mapper.set_device(layer_idx, vb.pp("o_proj"), loading_isq),
         )?;
-        let use_rope = (layer_idx + 1) % 4 != 0;
+        let use_rope = !(layer_idx + 1).is_multiple_of(4);
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         let norm = if cfg.use_qk_norm && use_rope {
             let vb = mapper.set_device(layer_idx, vb, false);
@@ -201,6 +201,7 @@ impl CausalSelfAttention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
+                    None, // sinks
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -218,6 +219,7 @@ impl CausalSelfAttention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
+                        None, // sinks
                     )?
                 }
             },
@@ -356,7 +358,7 @@ impl TextMoe {
         })
     }
 
-    fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let (bs, seq_len, hidden_dim) = xs.dims3()?;
         let xs_flat = xs.reshape(((), hidden_dim))?;
         let router_logits = self.router.forward_autocast(&xs_flat)?;
@@ -369,10 +371,10 @@ impl TextMoe {
         let router_scores = candle_nn::ops::sigmoid(&router_top_value.to_dtype(DType::F32)?)?
             .to_dtype(router_top_value.dtype())?;
 
-        // Forward through routed experts
+        // Forward through routed experts (is_prefill determined internally)
         let routed_out = self
             .experts
-            .forward(xs, router_scores, &router_indices, is_prefill)?
+            .forward(xs, router_scores, &router_indices)?
             .reshape((bs, seq_len, hidden_dim))?;
 
         // Forward through shared expert and add
@@ -388,10 +390,10 @@ enum MoeOrMlp {
 }
 
 impl MoeOrMlp {
-    fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         match self {
             Self::Mlp(l) => l.forward(xs),
-            Self::Moe(l) => l.forward(xs, is_prefill),
+            Self::Moe(l) => l.forward(xs),
         }
     }
 }
@@ -417,7 +419,7 @@ impl Block {
         comm: &Arc<mistralrs_quant::Comm>,
         real_device: Device,
     ) -> Result<Self> {
-        let use_chunked_attention = (layer_idx + 1) % 4 != 0;
+        let use_chunked_attention = !(layer_idx + 1).is_multiple_of(4);
         let attn = CausalSelfAttention::new(
             vb.pp("self_attn"),
             cfg,
@@ -502,10 +504,7 @@ impl Block {
             flash_params,
         )? + residual)?;
         let residual = &x;
-        let x = (self
-            .ff
-            .forward(&self.rms_2.forward(&x)?, flash_params.causal)?
-            + residual)?;
+        let x = (self.ff.forward(&self.rms_2.forward(&x)?)? + residual)?;
         Ok(x)
     }
 }
@@ -653,6 +652,7 @@ impl TextModel {
                 sliding_window: None,
                 k_head_dim: cfg.hidden_size / cfg.num_attention_heads,
                 v_head_dim: cfg.hidden_size / cfg.num_attention_heads,
+                kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
             },
             mapper,
             attention_chunk_size: cfg.attention_chunk_size,
@@ -729,10 +729,10 @@ impl TextModel {
                 flash_params,
             )?;
         }
-        let mut x = x.to_device(&self.device)?;
-        x = self.ln_f.forward(&x)?;
-        x = self.lm_head.forward_autocast(&x)?;
-        extract_logits(&x, context_lens)
+        let x = x.to_device(&self.device)?;
+        let x = self.ln_f.forward(&x)?;
+        let x = extract_logits(&x, context_lens)?;
+        self.lm_head.forward_autocast(&x)
     }
 
     pub fn residual_tensors_m(&self, uvb_m: UnVarBuilder) -> Vec<(String, Tensor)> {

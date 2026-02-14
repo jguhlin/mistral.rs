@@ -212,7 +212,8 @@ impl GraniteMlp {
         }
         let projected = MatMul.qmethod_matmul(&x, &*self.input_linear)?;
         let chunks = projected.chunk(2, candle_core::D::Minus1)?;
-        let gated = (candle_nn::ops::silu(&chunks[0])? * &chunks[1])?;
+        let gated =
+            crate::ops::mul_and_act(&chunks[0], &chunks[1], crate::layers::Activation::Silu)?;
         let mut res = MatMul.qmethod_matmul(&gated, &*self.output_linear)?;
         if self.input_linear.quantized_act_type().is_some() {
             res = res.to_dtype(original_dtype)?;
@@ -454,7 +455,8 @@ impl GraniteMoE {
 
         // Gated activation: silu(first_half) * second_half
         let chunks = hidden.chunk(2, candle_core::D::Minus1)?;
-        let hidden = (candle_nn::ops::silu(&chunks[0])? * &chunks[1])?;
+        let hidden =
+            crate::ops::mul_and_act(&chunks[0], &chunks[1], crate::layers::Activation::Silu)?;
 
         let expert_outputs = self.output_linear.forward(&hidden, &expert_size)?;
         let expert_outputs = expert_outputs.broadcast_mul(&batch_gates.unsqueeze(1)?)?;
@@ -1282,6 +1284,7 @@ impl CausalSelfAttention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
+                    None, // sinks
                 )?,
                 None => {
                     let input_metadata = PagedAttentionInputMetadata::dummy(q.device())?;
@@ -1296,6 +1299,7 @@ impl CausalSelfAttention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
+                        None, // sinks
                     )?
                 }
             },
@@ -1849,6 +1853,7 @@ impl GraniteMoeHybrid {
                 sliding_window: None,
                 k_head_dim: cfg.head_dim(),
                 v_head_dim: cfg.head_dim(),
+                kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
             },
             mapper,
             embedding_multiplier: cfg.embedding_multiplier,
@@ -1984,7 +1989,8 @@ impl GraniteMoeHybrid {
         }
 
         let x = x.to_device(&self.device)?;
-        let mut x = self.ln_f.forward(&x)?;
+        let x = self.ln_f.forward(&x)?;
+        let mut x = extract_logits(&x, context_lens)?;
 
         if let Some(t) = self.lm_head.quantized_act_type() {
             x = x.to_dtype(t)?;
@@ -1994,7 +2000,7 @@ impl GraniteMoeHybrid {
         // Scale logits
         logits = scale_tensor(logits, self.logits_scaling)?;
 
-        extract_logits(&logits, context_lens)
+        Ok(logits)
     }
 
     pub fn residual_tensors_m(&self, uvb_m: UnVarBuilder) -> Vec<(String, Tensor)> {

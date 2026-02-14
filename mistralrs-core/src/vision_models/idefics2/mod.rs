@@ -187,6 +187,7 @@ impl From<TextConfig> for mistral::Config {
             max_position_embeddings: val.max_position_embeddings,
             rms_norm_eps: val.rms_norm_eps,
             rope_theta: val.rope_theta,
+            rope_parameters: None,
             sliding_window: val.sliding_window,
             head_dim: None,
             quantization_config: None,
@@ -236,7 +237,7 @@ fn bucketize_right(xs: &[f32], boundaries: &[f32], device: &Device) -> Result<Te
             // For robust handling of NaNs, you might need a custom comparison.
             val.partial_cmp(&x).unwrap_or(Ordering::Less)
         }) {
-            Ok(i) => i,
+            Ok(i) => i + 1,
             Err(i) => i,
         };
 

@@ -223,6 +223,7 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
+                    None, // sinks
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -240,6 +241,7 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
+                        None, // sinks
                     )?
                 }
             },
@@ -325,10 +327,9 @@ impl Mlp {
         if let Some(t) = self.w1.quantized_act_type() {
             xs = xs.to_dtype(t)?;
         }
-        let mut current_hidden_states =
-            MatMul.qmethod_matmul(&xs, &*self.w1)?.apply(&self.act_fn)?;
-        let rhs = MatMul.qmethod_matmul(&xs, &*self.w3)?;
-        current_hidden_states = current_hidden_states.broadcast_mul(&rhs)?;
+        let w1_out = MatMul.qmethod_matmul(&xs, &*self.w1)?;
+        let w3_out = MatMul.qmethod_matmul(&xs, &*self.w3)?;
+        let current_hidden_states = crate::ops::mul_and_act(&w1_out, &w3_out, self.act_fn)?;
         let mut res = MatMul.qmethod_matmul(&current_hidden_states, &*self.w2)?;
         if self.w1.quantized_act_type().is_some() {
             res = res.to_dtype(original_dtype)?;
@@ -690,6 +691,7 @@ impl Model {
                 sliding_window: cfg.sliding_window,
                 k_head_dim: cfg.head_dim(),
                 v_head_dim: cfg.head_dim(),
+                kv_cache_layout: crate::paged_attention::KvCacheLayout::Standard,
             },
             mapper,
         })
@@ -742,11 +744,12 @@ impl Model {
             )?
         }
         let xs = xs.to_device(&self.device)?;
-        let mut xs = xs.apply(&self.norm)?;
+        let xs = xs.apply(&self.norm)?;
+        let mut xs = extract_logits(&xs, context_lens)?;
         if let Some(t) = self.lm_head.quantized_act_type() {
             xs = xs.to_dtype(t)?;
         }
-        extract_logits(&MatMul.qmethod_matmul(&xs, &*self.lm_head)?, context_lens)
+        MatMul.qmethod_matmul(&xs, &*self.lm_head)
     }
 }
 
