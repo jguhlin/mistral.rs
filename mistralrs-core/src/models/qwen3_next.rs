@@ -15,7 +15,7 @@ use std::{
 use crate::{
     amoe::AnyMoeBaseModelMixin,
     attention::SdpaParams,
-    device_map::DeviceMapper,
+    device_map::{DeviceMappedMask, DeviceMapper},
     kv_cache::{HybridCache, HybridCacheConfig, HybridLayerType},
     layers::{
         embedding, linear_no_bias, CausalMasker, GemmaRmsNorm, MatMul, RotaryEmbedding, Sdpa,
@@ -859,6 +859,7 @@ impl FullAttention {
                 softcap: None,
                 softmax_scale: 1.0 / (head_dim as f32).sqrt(),
                 sliding_window,
+                sinks: None,
             },
         })
     }
@@ -946,7 +947,6 @@ impl FullAttention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
-                    None, // sinks
                 )?,
                 None => {
                     let input_metadata = PagedAttentionInputMetadata::dummy(q.device())?;
@@ -961,7 +961,6 @@ impl FullAttention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
-                        None, // sinks
                     )?
                 }
             },
@@ -1590,6 +1589,7 @@ impl Model {
                 .map(|(_, meta)| meta.is_first_prompt_chunk)
                 .unwrap_or(true)
         });
+        let mask = DeviceMappedMask::new(mask, &*self.mapper)?;
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             x = self.mapper.map(x, layer_idx)?;
@@ -1598,9 +1598,10 @@ impl Model {
                 LayerImpl::FullAttention(_) => {
                     if let LocalLayerCache::Attention(kv_cache) = &mut local_cache.caches[layer_idx]
                     {
+                        let mask_for_layer = mask.as_ref().map(|m| m.get(x.device()).clone());
                         x = layer.forward_attention(
                             &x,
-                            &mask.clone().map(|m| m.to_device(x.device()).unwrap()),
+                            &mask_for_layer,
                             seqlen_offsets,
                             kv_cache,
                             metadata.as_ref().map(|(kv_cache, metadata)| {

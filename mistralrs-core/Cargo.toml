@@ -79,6 +79,7 @@ as-any.workspace = true
 float8.workspace = true
 llguidance.workspace = true
 toktrie_hf_tokenizers.workspace = true
+toktrie.workspace = true
 candle-flash-attn-v3 = { workspace = true, optional = true }
 safetensors.workspace = true
 serde-big-array.workspace = true
@@ -106,7 +107,7 @@ mistralrs-mcp = { workspace = true, features = ["utoipa"] }
 statrs.workspace = true
 openai-harmony = "0.0.8"
 
-[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))'.dependencies]
 objc = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
 candle-metal-kernels = { workspace = true, optional = true }

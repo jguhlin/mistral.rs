@@ -34,18 +34,18 @@ pub(crate) async fn finish_or_add_toks_to_seq(
     use_prefix_cacher: bool,
 ) -> Result<()> {
     let mut is_done = seq.is_done(logprobs.token, eos_tok, this.get_metadata().max_seq_len);
-    seq.add_token(
-        logprobs.clone(),
-        this.get_metadata()
-            .tok_env()
-            .ok_or(candle_core::Error::Msg(
-                "`finish_or_add_toks_to_seq` requires the pipeline to have a token trie"
-                    .to_string(),
-            ))?
-            .tok_trie()
-            .decode(&[logprobs.token]),
-        &is_done,
-    );
+    let metadata = this.get_metadata();
+    let tok_env = metadata.tok_env().ok_or(candle_core::Error::Msg(
+        "`finish_or_add_toks_to_seq` requires the pipeline to have a token trie".to_string(),
+    ))?;
+    // Include special tokens when tool calling is active (so tool parsers can see
+    // delimiters like <tool_call>, [TOOL_CALLS], <|python_tag|>) or when think tag
+    // mode is enabled (so <think>/<\/think> delimiters are visible in the output).
+    let include_special = seq.tools.is_some() || seq.is_think_tag_mode();
+    let completion_bytes = tok_env
+        .tok_trie()
+        .decode_ext(&[logprobs.token], include_special);
+    seq.add_token(logprobs.clone(), completion_bytes, &is_done);
 
     // If we can have a tool and we got a tool, stop the sequence early.
     // Doesn't conflict with the logic below because it does the same thing anyway.

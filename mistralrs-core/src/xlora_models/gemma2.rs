@@ -10,7 +10,7 @@ use tracing::info;
 use crate::{
     amoe::AnyMoeBaseModelMixin,
     attention::SdpaParams,
-    device_map::DeviceMapper,
+    device_map::{DeviceMappedMask, DeviceMapper},
     layers::{self, Activation, CausalMasker, GemmaRmsNorm, RotaryEmbedding, Sdpa},
     lora::{linear_b, linear_no_bias, LinearLayerLike, LoraConfig},
     models::gemma2::Config,
@@ -230,6 +230,7 @@ impl Attention {
                 softcap: cfg.attn_logit_softcapping.map(|x| x as f32),
                 softmax_scale: 1.0 / (cfg.query_pre_attn_scalar as f32).sqrt(),
                 sliding_window,
+                sinks: None,
             },
         })
     }
@@ -662,18 +663,14 @@ impl Model {
             xs.dtype(),
             self.cfg.num_attn_heads,
         )?;
+        let attention_mask = DeviceMappedMask::new(attention_mask, &*self.mapper)?;
+        let sliding_attention_mask = DeviceMappedMask::new(sliding_attention_mask, &*self.mapper)?;
         for (i, layer) in self.layers.iter().enumerate() {
             xs = self.mapper.map(xs, i)?;
             xs = layer.forward(
                 &xs,
-                attention_mask
-                    .as_ref()
-                    .map(|m| m.to_device(xs.device()).unwrap())
-                    .as_ref(),
-                sliding_attention_mask
-                    .as_ref()
-                    .map(|m| m.to_device(xs.device()).unwrap())
-                    .as_ref(),
+                attention_mask.as_ref().map(|m| m.get(xs.device())),
+                sliding_attention_mask.as_ref().map(|m| m.get(xs.device())),
                 seqlen_offsets,
                 &mut cache[i],
                 scalings.clone(),

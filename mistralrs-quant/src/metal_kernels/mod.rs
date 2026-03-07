@@ -28,6 +28,8 @@ type ComputePipelineState = ComputePipeline;
 const KERNELS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mistralrs_quant.metallib"));
 #[cfg(target_os = "ios")]
 const KERNELS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mistralrs_quant_ios.metallib"));
+#[cfg(target_os = "tvos")]
+const KERNELS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mistralrs_quant_tvos.metallib"));
 
 #[derive(thiserror::Error, Debug)]
 pub enum MetalKernelError {
@@ -74,34 +76,25 @@ impl Kernels {
     /// If this has been previously loaded it will just fetch it from cache.
     #[allow(clippy::const_is_empty)] // KERNELS can be empty when MISTRALRS_METAL_PRECOMPILE=0
     pub fn load_library(&self, device: &Device) -> Result<Library, MetalKernelError> {
-        use objc2_foundation::{NSString, NSURL};
-
         if let Some(lib) = LIBRARY.get() {
             Ok(lib.clone())
         } else {
             // Try to load precompiled metallib first (faster startup)
             let lib = if !KERNELS.is_empty() {
-                // Write precompiled metallib to a temp file and load via URL
-                // This avoids the complexity of creating DispatchData
-                let temp_dir = std::env::temp_dir();
-                let metallib_path = temp_dir.join("mistralrs_quant.metallib");
-                std::fs::write(&metallib_path, KERNELS).map_err(|e| {
-                    MetalKernelError::CompilationError(format!(
-                        "Failed to write metallib to temp file: {e}"
-                    ))
-                })?;
+                // Load precompiled metallib directly from embedded bytes via DispatchData.
+                // This avoids writing to a temp file, which can fail in sandboxed
+                // environments (e.g. macOS apps distributed via TestFlight).
+                // https://github.com/EricLBuehler/mistral.rs/issues/1897
+                let data = dispatch2::DispatchData::from_static_bytes(KERNELS);
 
-                let url_string = format!("file://{}", metallib_path.display());
-                let ns_url_string = NSString::from_str(&url_string);
-                let url = NSURL::URLWithString(&ns_url_string).ok_or_else(|| {
-                    MetalKernelError::CompilationError("Failed to create NSURL".to_string())
-                })?;
-
-                let raw_lib = device.as_ref().newLibraryWithURL_error(&url).map_err(|e| {
-                    MetalKernelError::CompilationError(format!(
-                        "Failed to load precompiled metallib: {e}"
-                    ))
-                })?;
+                let raw_lib = device
+                    .as_ref()
+                    .newLibraryWithData_error(&data)
+                    .map_err(|e| {
+                        MetalKernelError::CompilationError(format!(
+                            "Failed to load precompiled metallib: {e}"
+                        ))
+                    })?;
                 Library::new(raw_lib)
             } else {
                 // Fall back to runtime compilation if precompiled lib is not available
@@ -2966,8 +2959,8 @@ pub fn call_flash_attn_sinks_prefill(
     let br: usize = 8; // simdgroups per threadgroup
     let bc: usize = match head_dim {
         64 => 64,
-        80 | 96 | 128 => 32,
-        256 => 16,
+        80 | 96 | 112 | 128 => 32,
+        192 | 256 => 16,
         _ => {
             return Err(MetalKernelError::CompilationError(format!(
                 "flash_attn_sinks: unsupported head_dim={head_dim}"
@@ -3014,6 +3007,96 @@ pub fn call_flash_attn_sinks_prefill(
         width: num_heads,
         height: batch_size,
         depth: (q_len + br - 1) / br,
+    };
+    let group_dims = MTLSize {
+        width: br * 32,
+        height: 1,
+        depth: 1,
+    };
+    encoder.dispatch_thread_groups(grid_dims, group_dims);
+    Ok(())
+}
+
+/// Dispatches `flash_attn_sinks_varlen_kernel` Metal kernel.
+#[allow(clippy::too_many_arguments)]
+pub fn call_flash_attn_sinks_varlen_prefill(
+    device: &Device,
+    ep: impl EncoderProvider,
+    kernels: &Kernels,
+    ty: DType,
+    q_buffer: &Buffer,
+    q_offset: usize,
+    k_buffer: &Buffer,
+    k_offset: usize,
+    v_buffer: &Buffer,
+    v_offset: usize,
+    sinks_buffer: &Buffer,
+    sinks_offset: usize,
+    output: &Buffer,
+    cu_seqlens_q_buffer: &Buffer,
+    cu_seqlens_q_offset: usize,
+    cu_seqlens_k_buffer: &Buffer,
+    cu_seqlens_k_offset: usize,
+    scale: f32,
+    batch_size: usize,
+    max_q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    window_size: usize,
+) -> Result<(), MetalKernelError> {
+    let type_name = sdpa_with_sinks_dtype_name(ty)?;
+
+    let br: usize = 8;
+    let bc: usize = match head_dim {
+        64 => 64,
+        80 | 96 | 112 | 128 => 32,
+        192 | 256 => 16,
+        _ => {
+            return Err(MetalKernelError::CompilationError(format!(
+                "flash_attn_sinks_varlen: unsupported head_dim={head_dim}"
+            )))
+        }
+    };
+
+    let name = format!("flash_attn_sinks_varlen_{type_name}_hd{head_dim}_br{br}_bc{bc}");
+    let pipeline = kernels.load_pipeline(device, &name)?;
+
+    let encoder = ep.encoder();
+    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    encoder.set_compute_pipeline_state(&pipeline);
+
+    let d_pad = ((head_dim + 31) / 32) * 32;
+    let shared_mem_size = 2 * bc * d_pad * std::mem::size_of::<f32>();
+    encoder.set_threadgroup_memory_length(0, shared_mem_size);
+
+    let max_q_len_i32 = max_q_len as i32;
+    let num_heads_i32 = num_heads as i32;
+    let num_kv_heads_i32 = num_kv_heads as i32;
+    let window_size_i32 = window_size as i32;
+
+    set_params!(
+        encoder,
+        (
+            (q_buffer, q_offset),
+            (k_buffer, k_offset),
+            (v_buffer, v_offset),
+            (sinks_buffer, sinks_offset),
+            output,
+            (cu_seqlens_q_buffer, cu_seqlens_q_offset),
+            (cu_seqlens_k_buffer, cu_seqlens_k_offset),
+            scale,
+            max_q_len_i32,
+            num_heads_i32,
+            num_kv_heads_i32,
+            window_size_i32
+        )
+    );
+
+    let grid_dims = MTLSize {
+        width: num_heads,
+        height: batch_size,
+        depth: (max_q_len + br - 1) / br,
     };
     let group_dims = MTLSize {
         width: br * 32,

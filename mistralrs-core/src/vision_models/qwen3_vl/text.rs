@@ -9,7 +9,7 @@ use mistralrs_quant::{
 use super::config::TextConfig;
 use crate::{
     attention::SdpaParams,
-    device_map::DeviceMapper,
+    device_map::{DeviceMappedMask, DeviceMapper},
     layers::{self, Activation, F32RmsNorm, Qwen3VLRotaryEmbedding, RmsNorm, Sdpa},
     paged_attention::{AttentionImplementation, ModelConfigMetadata, PagedAttention},
     pipeline::{
@@ -181,6 +181,7 @@ impl Attention {
                 softcap: None,
                 softmax_scale: 1.0 / (cfg.head_dim as f32).sqrt(),
                 sliding_window: None,
+                sinks: None,
             },
         })
     }
@@ -250,7 +251,6 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
-                    None, // sinks
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -268,7 +268,6 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
-                        None, // sinks
                     )?
                 }
             },
@@ -537,14 +536,12 @@ impl Qwen3VLTextModel {
             .rotary_emb
             .compute_cos_sin(position_ids, xs.dtype())?;
 
+        let attention_mask = DeviceMappedMask::new(attention_mask.cloned(), &*self.mapper)?;
         for (i, layer) in self.layers.iter().enumerate() {
             xs = self.mapper.map(xs, i)?;
             xs = layer.forward(
                 &xs,
-                attention_mask
-                    .as_ref()
-                    .map(|m| m.to_device(xs.device()).unwrap())
-                    .as_ref(),
+                attention_mask.as_ref().map(|m| m.get(xs.device())),
                 &cos_sin,
                 &mut cache[i],
                 metadata

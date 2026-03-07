@@ -13,11 +13,12 @@ use mistralrs_quant::{
 use crate::{
     amoe::{AnyMoeBaseModelMixin, AnyMoeConfig, AnyMoeExpertType, MlpLayer, MoeMlp},
     attention::SdpaParams,
-    device_map::DeviceMapper,
+    device_map::{DeviceMappedMask, DeviceMapper},
     get_delta_from_lora_ab,
     layers::{
         embedding, Activation, CausalMasker, GemmaRmsNorm, MatMul, Mlp, RotaryEmbedding, Sdpa,
     },
+    layers_masker::PastKvLenCache,
     paged_attention::{AttentionImplementation, ModelConfigMetadata, PagedAttention},
     pipeline::{
         extract_logits,
@@ -160,6 +161,7 @@ impl Attention {
                 softcap: cfg.attn_logit_softcapping.map(|x| x as f32),
                 softmax_scale: 1.0 / (cfg.query_pre_attn_scalar as f32).sqrt(),
                 sliding_window,
+                sinks: None,
             },
         })
     }
@@ -229,7 +231,6 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
-                    None, // sinks
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -247,7 +248,6 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
-                        None, // sinks
                     )?
                 }
             },
@@ -520,7 +520,10 @@ impl Model {
         let cache = &mut self.cache.normal().0;
         let attention_mask = CausalMasker.make_causal_mask_matrix(
             input_ids,
-            &*cache,
+            metadata
+                .as_ref()
+                .map(|(_, _)| &seqlen_offsets as &dyn PastKvLenCache)
+                .unwrap_or(cache as &dyn PastKvLenCache),
             xs.dtype(),
             self.cfg.num_attn_heads,
         )?;
@@ -533,7 +536,10 @@ impl Model {
         });
         let sliding_attention_mask = CausalMasker.make_sliding_window_causal_mask_matrix(
             input_ids,
-            &*cache,
+            metadata
+                .as_ref()
+                .map(|(_, _)| &seqlen_offsets as &dyn PastKvLenCache)
+                .unwrap_or(cache as &dyn PastKvLenCache),
             Some(self.sliding_window),
             xs.dtype(),
             self.cfg.num_attn_heads,
@@ -545,18 +551,14 @@ impl Model {
                 .map(|(_, meta)| meta.is_first_prompt_chunk)
                 .unwrap_or(true)
         });
+        let attention_mask = DeviceMappedMask::new(attention_mask, &*self.mapper)?;
+        let sliding_attention_mask = DeviceMappedMask::new(sliding_attention_mask, &*self.mapper)?;
         for (i, layer) in self.layers.iter().enumerate() {
             xs = self.mapper.map(xs, i)?;
             xs = layer.forward(
                 &xs,
-                attention_mask
-                    .as_ref()
-                    .map(|m| m.to_device(xs.device()).unwrap())
-                    .as_ref(),
-                sliding_attention_mask
-                    .as_ref()
-                    .map(|m| m.to_device(xs.device()).unwrap())
-                    .as_ref(),
+                attention_mask.as_ref().map(|m| m.get(xs.device())),
+                sliding_attention_mask.as_ref().map(|m| m.get(xs.device())),
                 seqlen_offsets,
                 &mut cache[i],
                 metadata

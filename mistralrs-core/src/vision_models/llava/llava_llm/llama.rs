@@ -17,7 +17,7 @@ use mistralrs_quant::{
 use crate::{
     amoe::{AnyMoeBaseModelMixin, AnyMoeTrainableLayer, MlpLayer, MoeMlp},
     attention::SdpaParams,
-    device_map::DeviceMapper,
+    device_map::{DeviceMappedMask, DeviceMapper},
     get_delta_from_lora_ab,
     layers::{
         embedding, linear_no_bias as linear, Activation, CausalMasker, MatMul, RmsNorm, Sdpa,
@@ -103,7 +103,6 @@ impl CausalSelfAttention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
-                    None, // sinks
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -121,7 +120,6 @@ impl CausalSelfAttention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
-                        None, // sinks
                     )?
                 }
             },
@@ -222,6 +220,7 @@ impl CausalSelfAttention {
                 softcap: None,
                 softmax_scale: 1.0 / ((cfg.hidden_size / cfg.num_attention_heads) as f32).sqrt(),
                 sliding_window: None,
+                sinks: None,
             },
         })
     }
@@ -601,11 +600,12 @@ impl LLaVALLM for Llama {
                 .map(|(_, meta)| meta.is_first_prompt_chunk)
                 .unwrap_or(true)
         });
+        let mask = DeviceMappedMask::new(mask, &*self.mapper)?;
         for (block_idx, block) in self.blocks.iter().enumerate() {
             x = self.mapper.map(x, block_idx)?;
             x = block.forward(
                 &x,
-                &mask.clone().map(|m| m.to_device(x.device()).unwrap()),
+                &mask.as_ref().map(|m| m.get(x.device()).clone()),
                 seqlen_offsets,
                 block_idx,
                 &mut cache,

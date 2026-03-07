@@ -20,7 +20,7 @@ use crate::{
         MoeMlp,
     },
     attention::SdpaParams,
-    device_map::DeviceMapper,
+    device_map::{DeviceMappedMask, DeviceMapper},
     get_delta_from_lora_ab,
     layers::{embedding, layer_norm, Activation, CausalMasker, MatMul, RotaryEmbedding, Sdpa},
     layers_masker::PastKvLenCache,
@@ -253,6 +253,7 @@ impl Attention {
                 softcap: None,
                 softmax_scale: 1.0 / (head_dim as f32).sqrt(),
                 sliding_window: None,
+                sinks: None,
             },
         })
     }
@@ -324,7 +325,6 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
-                    None, // sinks
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -342,7 +342,6 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
-                        None, // sinks
                     )?
                 }
             },
@@ -588,13 +587,12 @@ impl Model {
                 .map(|(_, meta)| meta.is_first_prompt_chunk)
                 .unwrap_or(true)
         });
+        let mask = DeviceMappedMask::new(mask, &*self.mapper)?;
         for (i, layer) in self.layers.iter().enumerate() {
             xs = self.mapper.map(xs, i)?;
             xs = layer.forward(
                 &xs,
-                mask.as_ref()
-                    .map(|m| m.to_device(xs.device()).unwrap())
-                    .as_ref(),
+                mask.as_ref().map(|m| m.get(xs.device())),
                 seqlen_offsets,
                 &mut cache[i],
                 metadata
